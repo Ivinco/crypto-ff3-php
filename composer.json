@@ -10,14 +10,23 @@
     }
   ],
   "require": {
-    "php": ">=8.2",
+    "php": ">=8.0",
     "ext-gmp": "*",
     "ext-openssl": "*",
-    "phpseclib/phpseclib": "~3.0"
+    "phpseclib/phpseclib": "^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^9.6",
+    "larapack/dd": "^1.1"
   },
   "autoload": {
     "psr-4": {
       "Ivinco\\Crypto\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Ivinco\\Crypto\\Tests\\": "tests/"
     }
   }
 }

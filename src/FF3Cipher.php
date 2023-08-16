@@ -2,254 +2,349 @@
 
 namespace Ivinco\Crypto;
 
+namespace Ivinco\Crypto;
+
+use Exception;
 use phpseclib3\Crypt\AES;
 
 class FF3Cipher
 {
     public const DOMAIN_MIN     = 1000000;
+    public const RADIX_MAX      = 256;
+    public const BASE62         = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    public const BASE62_LEN     = 62;
     public const NUM_ROUNDS     = 8;
     public const BLOCK_SIZE     = 16;
     public const TWEAK_LEN      = 8;
     public const TWEAK_LEN_NEW  = 7;
     public const HALF_TWEAK_LEN = 4;
-    public const MAX_RADIX      = 36;
 
-    private mixed        $radix;
-    private float        $minLen;
-    private int|float    $maxLen;
-    private string|false $tweakBytes;
-    private string       $aesCipher;
-    private string|false $keyBytes;
+    private        $key;
+    private string $tweak;
+    private        $radix;
+    private        $alphabet;
+    private        $minLen;
+    private        $maxLen;
+    private        $aesCipher;
 
     /**
-     * FF3Cipher constructor.
-     *
-     * @param string $key
-     * @param string $tweak
-     * @param int    $radix
-     *
-     * @throws \Ivinco\Crypto\FF3Excepotion
+     * @throws \Ivinco\Crypto\FF3Exception
      */
     public function __construct(string $key, string $tweak, int $radix = 10)
     {
-        $this->radix    = $radix;
-        $this->keyBytes = hex2bin($key);
-        $this->minLen   = ceil(log(self::DOMAIN_MIN) / log($radix));
-        $this->maxLen   = (2 * floor(log(2 ** 96) / log($radix)));
-        $keyLen         = strlen($this->keyBytes);
+        $this->key   = hex2bin($key);
+        $this->tweak = $tweak;
+        $this->radix = $radix;
 
-        $this->aesCipher = match ($keyLen) {
-            16      => "aes-128-ecb",
-            24      => "aes-192-ecb",
-            32      => "aes-256-ecb",
-            default => throw new FF3Excepotion("key length $keyLen but must be 128, 192, or 256 bits"),
-        };
-
-        if (($radix < 2) || ($radix > self::MAX_RADIX)) {
-            throw new FF3Excepotion("radix must be between 2 and 36, inclusive");
+        if ($radix <= self::BASE62_LEN) {
+            $this->alphabet = substr(self::BASE62, 0, $radix);
+        } else {
+            $this->alphabet = null;
         }
 
-        if (($this->minLen < 2) || ($this->maxLen < $this->minLen)) {
-            throw new FF3Excepotion("minLen or maxLen invalid, adjust your radix");
+        $this->minLen = (int) ceil(log(self::DOMAIN_MIN) / log($radix));
+        $this->maxLen = 2 * (int) floor(96 / log($radix, 2));
+
+        $keyLength = strlen($this->key);
+
+        if (!in_array($keyLength, [16, 24, 32])) {
+            throw new FF3Exception("Invalid key length: $keyLength. Must be 128, 192, or 256 bits.");
         }
 
-        $this->tweakBytes = hex2bin($tweak);
-        if (strlen($this->tweakBytes) === self::TWEAK_LEN_NEW) {
-            $this->tweakBytes = self::calculateTweak64_FF3_1($this->tweakBytes);
+        if ($radix < 2 || $radix > self::RADIX_MAX) {
+            throw new FF3Exception("Radix must be between 2 and " . self::RADIX_MAX);
         }
+
+        if ($this->minLen < 2 || $this->maxLen < $this->minLen) {
+            throw new FF3Exception("Invalid minLen or maxLen. Adjust your radix.");
+        }
+
+        $this->aesCipher = new AES('ECB');
+        $this->aesCipher->setKey(strrev($this->key));
     }
 
-    public static function mod($n, $m): int
+    public static function withCustomAlphabet($key, string $tweak, $alphabet): self
     {
-        return (($n % $m) + $m) % $m;
+        $cipher           = new self($key, $tweak, strlen($alphabet));
+        $cipher->alphabet = $alphabet;
+        return $cipher;
     }
 
-    public static function calculateP($i, $radix, $w, $b): array|string
+    /**
+     * @throws \Ivinco\Crypto\FF3Exception
+     */
+    public function encrypt($plaintext): string
     {
-        $p = str_repeat(chr(0), self::BLOCK_SIZE);
-
-        $p[0] = $w[0];
-        $p[1] = $w[1];
-        $p[2] = $w[2];
-        $p[3] = ($w[3] ^ $i);
-
-        $b      = strrev($b);
-        $big    = self::convertToBigInt($b, $radix);
-        $bBytes = self::bigToUint8Array($big);
-
-        return substr_replace($p, $bBytes, self::BLOCK_SIZE - strlen($bBytes));
+        return $this->encryptWithTweak($plaintext, $this->tweak);
     }
 
-    public static function calculateTweak64_FF3_1($tweak56): string
+    /**
+     * @throws \Ivinco\Crypto\FF3Exception
+     */
+    public function decrypt($ciphertext): string
     {
-        $tweak64    = str_repeat(chr(0), 8);
+        return $this->decryptWithTweak($ciphertext, $this->tweak);
+    }
+
+    /**
+     * @throws \Ivinco\Crypto\FF3Exception
+     */
+    private function encryptWithTweak($plaintext, string $tweak): string
+    {
+        $tweakBytes = hex2bin($tweak);
+
+        $n = strlen($plaintext);
+
+        if ($n < $this->minLen || $n > $this->maxLen) {
+            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds");
+        }
+
+        if (!in_array(strlen($tweakBytes), [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
+            throw new FF3Exception("Invalid tweak length");
+        }
+
+        $u = (int) ceil($n / 2);
+        $v = $n - $u;
+        $A = substr($plaintext, 0, $u);
+        $B = substr($plaintext, $u);
+
+        if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
+            $tweakBytes = $this->calculateTweak64FF31($tweakBytes);
+        }
+
+        $Tl = substr($tweakBytes, 0, self::HALF_TWEAK_LEN);
+        $Tr = substr($tweakBytes, self::HALF_TWEAK_LEN);
+
+        $modU = gmp_pow($this->radix, $u);
+        $modV = gmp_pow($this->radix, $v);
+
+        for ($i = 0; $i < self::NUM_ROUNDS; $i++) {
+            if ($i % 2 === 0) {
+                $m = $u;
+                $W = $Tr;
+            } else {
+                $m = $v;
+                $W = $Tl;
+            }
+
+            $P    = pack('C*', self::calculateP($i, $this->alphabet, $W, $B));
+            $revP = strrev($P);
+
+            $S = $this->aesCipher->encrypt($revP);
+            $S = strrev($S);
+
+            $y = gmp_intval(gmp_init(bin2hex($S), 16));
+
+            $c = self::decodeIntR($A, $this->alphabet) + $y;
+
+            if ($i % 2 === 0) {
+                $cGmp = gmp_mod($c, $modU);
+            } else {
+                $cGmp = gmp_mod($c, $modV);
+            }
+            $c = gmp_intval($cGmp);
+
+            $C = self::encodeIntR($c, $this->alphabet, $m);
+
+            $A = $B;
+            $B = $C;
+        }
+
+        return $A . $B;
+    }
+
+    /**
+     * @throws \Ivinco\Crypto\FF3Exception
+     */
+    private function decryptWithTweak($ciphertext, string $tweak): string
+    {
+        $tweakBytes = hex2bin($tweak);
+
+        $n = strlen($ciphertext);
+
+        if ($n < $this->minLen || $n > $this->maxLen) {
+            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds");
+        }
+
+        if (!in_array(strlen($tweakBytes), [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
+            throw new FF3Exception("Invalid tweak length");
+        }
+
+        $u = (int) ceil($n / 2);
+        $v = $n - $u;
+        $A = substr($ciphertext, 0, $u);
+        $B = substr($ciphertext, $u);
+
+        if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
+            $tweakBytes = $this->calculateTweak64FF31($tweakBytes);
+        }
+
+        $Tl = substr($tweakBytes, 0, self::HALF_TWEAK_LEN);
+        $Tr = substr($tweakBytes, self::HALF_TWEAK_LEN);
+
+        $modU = gmp_pow($this->radix, $u);
+        $modV = gmp_pow($this->radix, $v);
+
+        for ($i = self::NUM_ROUNDS - 1; $i >= 0; $i--) {
+            if ($i % 2 === 0) {
+                $m = $u;
+                $W = $Tr;
+            } else {
+                $m = $v;
+                $W = $Tl;
+            }
+
+            $P    = pack('C*', self::calculateP($i, $this->alphabet, $W, $A)); // switched from B to A
+            $revP = strrev($P);
+
+            $S = $this->aesCipher->encrypt($revP);
+            $S = strrev($S);
+
+            $y = gmp_intval(gmp_init(bin2hex($S), 16));
+
+            $c = self::decodeIntR($B, $this->alphabet) - $y; // switched from A to B and changed addition to subtraction
+
+            if ($i % 2 === 0) {
+                $cGmp = gmp_mod($c, $modU);
+            } else {
+                $cGmp = gmp_mod($c, $modV);
+            }
+            $c = gmp_intval($cGmp);
+
+            $C = self::encodeIntR($c, $this->alphabet, $m);
+
+            $B = $A; // swapped A and B assignments
+            $A = $C;
+        }
+
+        return $B . $A; // switched order of A and B
+    }
+
+    /**
+     * Calculate the 64-bit tweak for FF3-1
+     *
+     * @param string $tweak56
+     *
+     * @return string
+     */
+    private function calculateTweak64FF31(string $tweak56): string
+    {
+        $tweak64 = str_repeat(chr(0), 8);
+
         $tweak64[0] = $tweak56[0];
         $tweak64[1] = $tweak56[1];
         $tweak64[2] = $tweak56[2];
-        $tweak64[3] = ($tweak56[3] & 0xF0);
+        $tweak64[3] = $tweak56[3] & chr(0xF0);
         $tweak64[4] = $tweak56[4];
         $tweak64[5] = $tweak56[5];
         $tweak64[6] = $tweak56[6];
-        $tweak64[7] = (($tweak56[3] & 0x0F) << 4);
+        $tweak64[7] = ($tweak56[3] & chr(0x0F)) << 4;
+
         return $tweak64;
     }
 
-    public static function reverseString($s): string
+    /**
+     * Calculate the P value for the given round
+     *
+     * @param int    $i
+     * @param string $alphabet
+     * @param string $W
+     * @param string $B
+     *
+     * @return array
+     * @throws \Ivinco\Crypto\FF3Exception
+     */
+    public static function calculateP($i, string $alphabet, $W, $B): array
     {
-        return strrev($s);
-    }
+        $P = array_fill(0, self::BLOCK_SIZE, 0);
+        $W = unpack('C*', $W);
 
-    public static function convertToBigInt($value, $radix)
-    {
-        $big      = gmp_init(0, 10);
-        $value    = strrev($value);
-        $valueLen = strlen($value);
+        $P[0] = $W[1];
+        $P[1] = $W[2];
+        $P[2] = $W[3];
+        $P[3] = $W[4] ^ (int) $i;
 
-        for ($i = 0; $i < $valueLen; $i++) {
-            $big = gmp_add(gmp_mul($big, $radix), base_convert($value[$i], $radix, 10));
+        // Decode string into number
+        $BDecoded = gmp_strval(self::decodeIntR($B, $alphabet));
+
+        // Convert number to bytes (big endian)
+        $BBytes = str_pad(pack('J', $BDecoded), 12, chr(0), STR_PAD_LEFT);
+        $BBytes = array_values(unpack('C*', $BBytes));
+
+        $BBytesLen = count($BBytes);
+        for ($j = 0; $j < $BBytesLen; $j++) {
+            $P[self::BLOCK_SIZE - $j - 1] = $BBytes[$BBytesLen - $j - 1];
         }
 
-        return $big;
-    }
-
-    public static function bigToUint8Array($big): false|string
-    {
-        $hex = gmp_strval($big, 16);
-        if (strlen($hex) % 2) {
-            $hex = '0' . $hex;
-        }
-        return hex2bin($hex);
+        return $P;
     }
 
     /**
-     * Encrypts a plaintext string to a ciphertext string.
+     * Return a string representation of a number in the given base system for 2..62
      *
-     * @param string $plaintext
+     * The string is left in a reversed order expected by the calling cryptographic
+     * function
+     *
+     * @param int    $n
+     * @param string $alphabet
+     * @param int    $length
      *
      * @return string
-     * @throws \Ivinco\Crypto\FF3Excepotion
+     * @throws \Ivinco\Crypto\FF3Exception
+     * @example encodeIntR(10, hexdigits) -> 'A'
      */
-    public function encrypt(string $plaintext): string
+    public static function encodeIntR(int $n, string $alphabet, int $length = 0): string
     {
-        $n = strlen($plaintext);
+        $base = strlen($alphabet);
 
-        if (($n < $this->minLen) || ($n > $this->maxLen)) {
-            throw new FF3Excepotion("message length $n is not within min $this->minLen and max $this->maxLen bounds");
+        if ($base > self::RADIX_MAX) {
+            throw new FF3Exception("Base $base is outside range of supported radix 2.." . self::RADIX_MAX);
         }
 
-        if ((strlen($this->tweakBytes) !== self::TWEAK_LEN) && (strlen($this->tweakBytes) !== self::TWEAK_LEN_NEW)) {
-            throw new FF3Excepotion("tweak length " . strlen($this->tweakBytes) . " is invalid: tweak must be 56 or 64 bits");
+        $x = '';
+        while ($n >= $base) {
+            $b = gmp_intval(gmp_mod($n, $base));
+            $n = gmp_intval(gmp_div($n, $base));
+            //echo "n: $n, base: $base, b: $b\n";
+            $x = $alphabet[$b] . $x;
         }
 
-        $u = ceil($n / 2.0);
-        $v = $n - $u;
+        $x = $alphabet[$n] . $x;
 
-        $a = substr($plaintext, 0, $u);
-        $b = substr($plaintext, $u);
-
-        $tl = substr($this->tweakBytes, 0, self::HALF_TWEAK_LEN);
-        $tr = substr($this->tweakBytes, self::HALF_TWEAK_LEN, self::TWEAK_LEN);
-
-        $modU = gmp_pow($this->radix, $u);
-        $modV = gmp_pow($this->radix, $v);
-
-        for ($i = 0; $i < self::NUM_ROUNDS; ++$i) {
-            if ($i % 2 === 0) {
-                $m = $u;
-                $w = $tr;
-            } else {
-                $m = $v;
-                $w = $tl;
-            }
-
-            $p = self::calculateP($i, $this->radix, $w, $b);
-            $p = strrev($p);
-
-            $s = openssl_encrypt($p, $this->aesCipher, $this->aesCipher, OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING);
-            $s = strrev($s);
-
-            $y = gmp_init(bin2hex($s), 16);
-            $c = gmp_add(self::convertToBigInt(strrev($a), $this->radix), $y);
-
-            if ($i % 2 === 0) {
-                $c = self::mod($c, $modU);
-            } else {
-                $c = self::mod($c, $modV);
-            }
-
-            $c = strrev(gmp_strval($c, $this->radix));
-            $c .= substr("00000000", 0, $m - strlen($c));
-
-            $a = $b;
-            $b = $c;
+        if (strlen($x) < $length) {
+            $x = str_pad($x, $length, $alphabet[0], STR_PAD_LEFT);
         }
 
-        return $a . $b;
+        return $x;
     }
 
     /**
-     * Decrypts a ciphertext string to a plaintext string.
+     * Decode a Base X encoded string into the number
      *
-     * @param string $ciphertext
+     * @param string $string   The encoded string
+     * @param string $alphabet The alphabet to use for decoding
      *
-     * @return string
-     * @throws \Ivinco\Crypto\FF3Excepotion
+     * @return \GMP
+     * @throws \Ivinco\Crypto\FF3Exception
      */
-    public function decrypt(string $ciphertext): string
+    public static function decodeIntR(string $string, string $alphabet): \GMP
     {
-        $n = strlen($ciphertext);
+        $strlen = strlen($string);
+        $base   = strlen($alphabet);
+        $num    = gmp_init(0);
 
-        if (($n < $this->minLen) || ($n > $this->maxLen)) {
-            throw new FF3Excepotion("message length $n is not within min $this->minLen and max $this->maxLen bounds");
-        }
-
-        if ((strlen($this->tweakBytes) !== self::TWEAK_LEN) && (strlen($this->tweakBytes) !== self::TWEAK_LEN_NEW)) {
-            throw new FF3Excepotion("tweak length " . strlen($this->tweakBytes) . " is invalid: tweak must be 56 or 64 bits");
-        }
-
-        $u = ceil($n / 2.0);
-        $v = $n - $u;
-
-        $a = substr($ciphertext, 0, $u);
-        $b = substr($ciphertext, $u);
-
-        $tl = substr($this->tweakBytes, 0, self::HALF_TWEAK_LEN);
-        $tr = substr($this->tweakBytes, self::HALF_TWEAK_LEN, self::TWEAK_LEN);
-
-        $modU = gmp_pow($this->radix, $u);
-        $modV = gmp_pow($this->radix, $v);
-
-        for ($i = (self::NUM_ROUNDS - 1); $i >= 0; --$i) {
-            if ($i % 2 === 0) {
-                $m = $u;
-                $w = $tr;
-            } else {
-                $m = $v;
-                $w = $tl;
+        $idx = 0;
+        foreach (str_split(strrev($string)) as $char) {
+            $power   = ($strlen - ($idx + 1));
+            $charIdx = strpos($alphabet, $char);
+            if ($charIdx === false) {
+                throw new FF3Exception("Char $char not found in alphabet $alphabet");
             }
 
-            $p = self::calculateP($i, $this->radix, $w, $a);
-            $p = strrev($p);
-
-            $s = openssl_encrypt($p, $this->aesCipher, $this->keyBytes, OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING);
-            $s = strrev($s);
-
-            $y = gmp_init(bin2hex($s), 16);
-            $c = gmp_sub(self::convertToBigInt(strrev($b), $this->radix), $y);
-
-            if ($i % 2 === 0) {
-                $c = self::mod($c, $modU);
-            } else {
-                $c = self::mod($c, $modV);
-            }
-
-            $c = strrev(gmp_strval($c, $this->radix));
-            $c .= substr("00000000", 0, $m - strlen($c));
-
-            $b = $a;
-            $a = $c;
+            $num += gmp_mul($charIdx, gmp_pow($base, $power));
+            $idx++;
         }
 
-        return $a . $b;
+        return $num;
     }
 }
