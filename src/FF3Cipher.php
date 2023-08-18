@@ -2,53 +2,35 @@
 
 namespace Ivinco\Crypto;
 
-namespace Ivinco\Crypto;
-
-use Exception;
 use GMP;
 use phpseclib3\Crypt\AES;
 
 class FF3Cipher
 {
     public const DOMAIN_MIN     = 1000000;
-    public const RADIX_MAX      = 256;
     public const BASE62         = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     public const BASE62_LEN     = 62;
+    public const RADIX_MAX      = 256;
     public const NUM_ROUNDS     = 8;
     public const BLOCK_SIZE     = 16;
     public const TWEAK_LEN      = 8;
     public const TWEAK_LEN_NEW  = 7;
     public const HALF_TWEAK_LEN = 4;
 
-    private        $key;
     private string $tweak;
     private        $radix;
     private        $alphabet;
     private        $minLen;
     private        $maxLen;
-    private        $aesCipher;
-
-    /**
-     * @param string $txt
-     *
-     * @return string
-     */
-    public static function reverseString(string $txt): string
-    {
-        $length   = strlen($txt);
-        $reversed = '';
-        for ($i = $length - 1; $i >= 0; $i--) {
-            $reversed .= $txt[$i];
-        }
-        return $reversed;
-    }
+    private AES    $aesCipher;
 
     /**
      * @throws \Ivinco\Crypto\FF3Exception
      */
     public function __construct(string $key, string $tweak, int $radix = 10)
     {
-        $this->key   = hex2bin($key);
+        $keyBytes = hex2bin($key);
+
         $this->tweak = $tweak;
         $this->radix = $radix;
 
@@ -58,25 +40,41 @@ class FF3Cipher
             $this->alphabet = null;
         }
 
+        # Calculate range of supported message lengths [minLen..maxLen]
+        # per revised spec, radix^minLength >= 1,000,000.
         $this->minLen = (int) ceil(log(self::DOMAIN_MIN) / log($radix));
-        $this->maxLen = 2 * (int) floor(96 / log($radix, 2));
 
-        $keyLength = strlen($this->key);
+        # We simplify the specs log[radix](2^96) to 96/log2(radix) using the log base
+        # change rule
+        $this->maxLen = 2 * floor(96 / log($radix, 2));
 
-        if (!in_array($keyLength, [16, 24, 32])) {
-            throw new FF3Exception("Invalid key length: $keyLength. Must be 128, 192, or 256 bits.");
+        $keyLength = strlen($keyBytes);
+        switch ($keyLength) {
+            case 16:
+                $keyLength = 128;
+                break;
+            case 24:
+                $keyLength = 192;
+                break;
+            case 32:
+                $keyLength = 256;
+                break;
+            default:
+                throw new FF3Exception("Invalid key length: $keyLength. Must be 128, 192, or 256 bits.");
         }
 
         if ($radix < 2 || $radix > self::RADIX_MAX) {
-            throw new FF3Exception("Radix must be between 2 and " . self::RADIX_MAX);
+            throw new FF3Exception("Radix must be between 2 and " . self::RADIX_MAX . ", inclusive.");
         }
 
         if ($this->minLen < 2 || $this->maxLen < $this->minLen) {
             throw new FF3Exception("Invalid minLen or maxLen. Adjust your radix.");
         }
 
-        $this->aesCipher = new AES('ECB');
-        $this->aesCipher->setKey(self::reverseString($this->key));
+        $this->aesCipher = new AES('ecb');
+        $this->aesCipher->setKeyLength($keyLength);
+        $this->aesCipher->disablePadding();
+        $this->aesCipher->setKey(strrev($keyBytes));
     }
 
     /**
@@ -90,6 +88,8 @@ class FF3Cipher
     }
 
     /**
+     * Encrypts the plaintext string and returns a ciphertext of the same length and format
+     *
      * @throws \Ivinco\Crypto\FF3Exception
      */
     public function encrypt(string $plaintext): string
@@ -118,32 +118,38 @@ class FF3Cipher
 
         // Check if message length is within minLength and maxLength bounds
         if ($n < $this->minLen || $n > $this->maxLen) {
-            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds");
+            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds.");
         }
 
         // Make sure the given the length of tweak in bits is 56 or 64
-        if (!in_array(strlen($tweakBytes), [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
-            throw new FF3Exception("Invalid tweak length");
+        $strlen = strlen($tweakBytes);
+        if (!in_array($strlen, [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
+            throw new FF3Exception("Tweak length $strlen invalid: tweak must be 56 or 64 bits.");
         }
 
         // Calculate split point
-        $u = ceil($n / 2.0);
+        $u = ceil($n / 2);
         $v = $n - $u;
 
         // Split the message
         $A = substr($plaintext, 0, $u);
         $B = substr($plaintext, $u);
 
+        if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
+            # FF3-1
+            $tweakBytes = hex2bin(self::decToHex($this->calculateTweak64FF31($tweakBytes)));
+        }
+
         // Split the tweak
         $Tl = substr($tweakBytes, 0, self::HALF_TWEAK_LEN);
         $Tr = substr($tweakBytes, self::HALF_TWEAK_LEN, self::TWEAK_LEN);
-        error_log("Tweak: $tweak, tweakBytes:{" . bin2hex($tweakBytes) . "}");
+        //error_log("Tweak: $tweak, tweakBytes:{" . bin2hex($tweakBytes) . "}");
 
         # Pre-calculate the modulus since it's only one of 2 values,
         # depending on whether it is even or odd
         $modU = gmp_pow($this->radix, $u);
         $modV = gmp_pow($this->radix, $v);
-        error_log("modU: $modU modV: $modV");
+        //error_log("modU: $modU modV: $modV");
 
         # Main Feistel Round, 8 times
         #
@@ -162,31 +168,30 @@ class FF3Cipher
 
             # P is fixed-length 16 bytes
             $P    = self::calculateP($i, $this->alphabet, $W, $B);
-            $P = array_reverse($P);
-            $P = pack('C*', $P);
+            $revP = self::decToHex(array_reverse($P));
 
             // Calculate S by operating on P in place
-            $S = $this->aesCipher->encrypt($P);
+            $S = $this->aesCipher->encrypt(hex2bin($revP));
             $S = strrev($S);
-            error_log("S:    " . bin2hex($S));
+            //error_log("S:    " . bin2hex($S));
 
             $y = gmp_init('0x' . bin2hex($S), 16);
 
             # Calculate c
-            $c = gmp_init(strrev($A), $this->radix) + $y;
+            $c = self::decodeIntR($A, $this->alphabet);
+            $c = $c + $y;
 
             if ($i % 2 === 0) {
                 $c = gmp_mod($c, $modU);
             } else {
                 $c = gmp_mod($c, $modV);
             }
-            $C = gmp_strval($c, $this->radix);
-            $C = self::reverseString($C);
-            $C = $C . substr("00000000", 0, $m - strlen($C));
+
+            $C = self::encodeIntR($c, $this->alphabet, $m);
 
             $A = $B;
             $B = $C;
-            error_log("A: {$A} B: {$B}");
+            //error_log("A: {$A} B: {$B}");
         }
 
         return $A . $B;
@@ -201,32 +206,43 @@ class FF3Cipher
 
         $n = strlen($ciphertext);
 
+        // Check if message length is within minLength and maxLength bounds
         if ($n < $this->minLen || $n > $this->maxLen) {
-            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds");
+            throw new FF3Exception("Message length $n is not within min $this->minLen and max $this->maxLen bounds.");
         }
 
-        if (!in_array(strlen($tweakBytes), [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
-            throw new FF3Exception("Invalid tweak length");
+        // Make sure the given the length of tweak in bits is 56 or 64
+        $strlen = strlen($tweakBytes);
+        if (!in_array($strlen, [self::TWEAK_LEN, self::TWEAK_LEN_NEW])) {
+            throw new FF3Exception("Tweak length $strlen invalid: tweak must be 56 or 64 bits.");
         }
 
+        // Calculate split point
         $u = ceil($n / 2);
         $v = $n - $u;
+
+        // Split the message
         $A = substr($ciphertext, 0, $u);
         $B = substr($ciphertext, $u);
 
         if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
-            $tweakBytes = $this->calculateTweak64FF31($tweakBytes);
+            # FF3-1
+            $tweakBytes = hex2bin(self::decToHex($this->calculateTweak64FF31($tweakBytes)));
         }
 
+        // Split the tweak
         $Tl = substr($tweakBytes, 0, self::HALF_TWEAK_LEN);
-        $Tr = substr($tweakBytes, self::HALF_TWEAK_LEN);
-        error_log("Tweak: $tweak, tweakBytes:{" . bin2hex($tweakBytes) . "}");
+        $Tr = substr($tweakBytes, self::HALF_TWEAK_LEN, self::TWEAK_LEN);
+        //error_log("Tweak: $tweak, tweakBytes:{" . bin2hex($tweakBytes) . "}");
 
+        # Pre-calculate the modulus since it's only one of 2 values,
+        # depending on whether it is even or odd
         $modU = gmp_pow($this->radix, $u);
         $modV = gmp_pow($this->radix, $v);
-        error_log("modU: {$modU} modV: {$modV}");
+        //error_log("modU: $modU modV: $modV");
 
-        for ($i = self::NUM_ROUNDS - 1; $i >= 0; $i--) {
+        # Main Feistel Round, 8 times
+        foreach (array_reverse(range(0, self::NUM_ROUNDS - 1)) as $i) {
 
             # Determine alternating Feistel round side
             if ($i % 2 === 0) {
@@ -238,33 +254,34 @@ class FF3Cipher
             }
 
             # P is fixed-length 16 bytes
-            $P    = pack('C*', self::calculateP($i, $this->alphabet, $W, $A)); // switched from B to A
-            $revP = self::reverseString($P);
+            $P    = self::calculateP($i, $this->alphabet, $W, $A);
+            $revP = self::decToHex(array_reverse($P));
 
-            $S = $this->aesCipher->encrypt($revP);
-            $S = self::reverseString($S);
+            // Calculate S by operating on P in place
+            $S = $this->aesCipher->encrypt(hex2bin($revP));
+            $S = strrev($S);
+            //error_log("S:    " . bin2hex($S));
 
-            $y = gmp_intval(gmp_init(bin2hex($S), 16));
+            $y = gmp_init('0x' . bin2hex($S), 16);
 
             # Calculate c
             $c = self::decodeIntR($B, $this->alphabet);
-
-            $c = $c + $y;
+            $c = $c - $y;
 
             if ($i % 2 === 0) {
-                $cGmp = gmp_mod($c, $modU);
+                $c = gmp_mod($c, $modU);
             } else {
-                $cGmp = gmp_mod($c, $modV);
+                $c = gmp_mod($c, $modV);
             }
-            $c = gmp_intval($cGmp);
 
-            $C = self::encodeIntR($c, $this->alphabet, (int) $m);
+            $C = self::encodeIntR($c, $this->alphabet, $m);
 
-            $B = $A; // swapped A and B assignments
+            $B = $A;
             $A = $C;
+            //error_log("A: {$A} B: {$B}");
         }
 
-        return $B . $A; // switched order of A and B
+        return $A . $B;
     }
 
     /**
@@ -272,11 +289,12 @@ class FF3Cipher
      *
      * @param string $tweak56
      *
-     * @return string
+     * @return array
      */
-    private function calculateTweak64FF31(string $tweak56): string
+    private function calculateTweak64FF31(string $tweak56): array
     {
-        $tweak64 = str_repeat(chr(0), 8);
+        $tweak64 = array_fill(0, 8, 0);
+        $tweak56 = array_values(unpack('C*', $tweak56));
 
         $tweak64[0] = $tweak56[0];
         $tweak64[1] = $tweak56[1];
@@ -295,33 +313,30 @@ class FF3Cipher
      *
      * @param int    $i
      * @param string $alphabet
-     * @param string $w
-     * @param string $b
+     * @param string $W
+     * @param string $B
      *
      * @return array
      * @throws \Ivinco\Crypto\FF3Exception
      */
-    public static function calculateP($i, string $alphabet, string $w, string $b): array
+    public static function calculateP(int $i, string $alphabet, string $W, string $B): array
     {
         $P = array_fill(0, self::BLOCK_SIZE, 0);
-        $W = array_values(unpack('C*', $w));
+        $W = array_values(unpack('C*', $W));
 
         $P[0] = $W[0];
         $P[1] = $W[1];
         $P[2] = $W[2];
-        $P[3] = $W[3] ^ (int) $i;
+        $P[3] = $W[3] ^ $i;
 
         // Decode string into number
-        $BDecoded = gmp_strval(self::decodeIntR($b, $alphabet));
-
+        $BBytes = self::toBytes(self::decodeIntR($B, $alphabet));
         // Convert number to bytes (big endian)
-        $BBytes = str_pad(pack('J', $BDecoded), 12, chr(0), STR_PAD_LEFT);
-        $BBytes = array_values(unpack('C*', $BBytes));
+        $BBytes = unpack('C*', $BBytes);
 
-        $BBytesLen = count($BBytes);
-        for ($j = 0; $j < $BBytesLen; $j++) {
-            $P[self::BLOCK_SIZE - $j - 1] = $BBytes[$BBytesLen - $j - 1];
-        }
+        // Copy BBytes to PBytes
+        $startIndex = self::BLOCK_SIZE - count($BBytes);
+        array_splice($P, $startIndex, count($BBytes), array_slice($BBytes, 0));
 
         return $P;
     }
@@ -332,7 +347,7 @@ class FF3Cipher
      * The string is left in a reversed order expected by the calling cryptographic
      * function
      *
-     * @param int    $n
+     * @param \GMP   $n
      * @param string $alphabet
      * @param int    $length
      *
@@ -340,7 +355,7 @@ class FF3Cipher
      * @throws \Ivinco\Crypto\FF3Exception
      * @example encodeIntR(10, hexdigits) -> 'A'
      */
-    public static function encodeIntR(int $n, string $alphabet, int $length = 0): string
+    public static function encodeIntR(GMP $n, string $alphabet, int $length = 0): string
     {
         $base = strlen($alphabet);
 
@@ -349,17 +364,14 @@ class FF3Cipher
         }
 
         $x = '';
-        while ($n >= $base) {
-            $b = gmp_intval(gmp_mod($n, $base));
-            $n = gmp_intval(gmp_div($n, $base));
-            //error_log("n: $n, base: $base, b: $b");
-            $x = $alphabet[$b] . $x;
+        while (gmp_cmp($n, $base) >= 0) {
+            [$n, $b] = gmp_div_qr($n, $base);
+            $x .= $alphabet[gmp_intval($b)];
         }
-
-        $x = $alphabet[$n] . $x;
+        $x .= $alphabet[gmp_intval($n)];
 
         if (strlen($x) < $length) {
-            $x = str_pad($x, $length, $alphabet[0], STR_PAD_LEFT);
+            $x = str_pad($x, $length, $alphabet[0]);
         }
 
         return $x;
@@ -368,30 +380,61 @@ class FF3Cipher
     /**
      * Decode a Base X encoded string into the number
      *
-     * @param string $string   The encoded string
+     * @param string $astring  The encoded string
      * @param string $alphabet The alphabet to use for decoding
      *
      * @return \GMP
      * @throws \Ivinco\Crypto\FF3Exception
      */
-    public static function decodeIntR(string $string, string $alphabet): GMP
+    public static function decodeIntR(string $astring, string $alphabet): GMP
     {
-        $strlen = strlen($string);
+        $strlen = strlen($astring);
         $base   = strlen($alphabet);
         $num    = gmp_init(0);
 
         $idx = 0;
-        foreach (str_split(strrev($string)) as $char) {
+        for ($i = $strlen - 1; $i >= 0; $i--) {
+            $char    = $astring[$i];
             $power   = ($strlen - ($idx + 1));
-            $charIdx = strpos($alphabet, $char);
-            if ($charIdx === false) {
-                throw new FF3Exception("Char $char not found in alphabet $alphabet");
+            $charPos = strpos($alphabet, $char);
+            if ($charPos === false) {
+                throw new FF3Exception("char $char not found in alphabet $alphabet.");
             }
-
-            $num += gmp_mul($charIdx, gmp_pow($base, $power));
+            $num += gmp_mul($charPos, gmp_pow($base, $power));
             $idx++;
         }
 
         return $num;
+    }
+
+    public static function toBytes($number, $length = 1, $byteorder = 'big')
+    {
+        $binString    = gmp_export($number);
+        $actualLength = strlen($binString);
+        if ($actualLength < $length) {
+            if ($byteorder === 'big') {
+                $binString = str_repeat("\0", $length - $actualLength) . $binString;
+            } else {
+                $binString .= str_repeat("\0", $length - $actualLength);
+            }
+        }
+
+        return $binString;
+    }
+
+    /**
+     * Convert bytes to hex string
+     *
+     * @param array $values
+     *
+     * @return string
+     */
+    public static function decToHex(array $values)
+    {
+        $hexString = "";
+        foreach ($values as $value) {
+            $hexString .= sprintf('%02x', $value);
+        }
+        return $hexString;
     }
 }
