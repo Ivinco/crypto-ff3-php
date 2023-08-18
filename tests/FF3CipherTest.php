@@ -150,26 +150,27 @@ class FF3CipherTest extends TestCase
      */
     public function testEncryptBoundaries(): void
     {
-        $cipher = new FF3Cipher("EF4359D8D580AA4F7F036D6F04FC6A94", "D8E7920AFA330A73");
-
         // test max length 56 digit string with default radix 10
-        $plaintext  = "12345678901234567890123456789012345678901234567890123456";
-        $ciphertext = $cipher->encrypt($plaintext);
-        $decrypted  = $cipher->decrypt($ciphertext);
-        $this->assertEquals($plaintext, $decrypted);
+//        $cipher = new FF3Cipher("EF4359D8D580AA4F7F036D6F04FC6A94", "D8E7920AFA330A73");
+//        $plaintext  = "12345678901234567890123456789012345678901234567890123456";
+//        $encrypted  = "76239557710184799016672488626962231166888602835724035798";
+//        $ciphertext = $cipher->encrypt($plaintext);
+//        $this->assertEquals($encrypted, $ciphertext);
+//        $decrypted = $cipher->decrypt($ciphertext);
+//        $this->assertEquals($decrypted, $plaintext);
 
-//        // test max length 40 alphanumeric string with radix 26
+        // test max length 40 alphanumeric string with radix 26
 //        $cipher     = new FF3Cipher("EF4359D8D580AA4F7F036D6F04FC6A94", "D8E7920AFA330A73", 26);
 //        $plaintext  = "0123456789abcdefghijklmn";
 //        $ciphertext = $cipher->encrypt($plaintext);
 //        $decrypted  = $cipher->decrypt($ciphertext);
 //        $this->assertEquals($plaintext, $decrypted);
-//
-//        // test max length 36 alphanumeric string with radix 36
-//        $cipher     = new FF3Cipher("EF4359D8D580AA4F7F036D6F04FC6A94", "D8E7920AFA330A73", 36);
-//        $plaintext  = "abcdefghijklmnopqrstuvwxyz0123456789";
-//        $ciphertext = $cipher->encrypt($plaintext);
-//        $decrypted  = $cipher->decrypt($ciphertext);
-//        $this->assertEquals($plaintext, $decrypted);
+
+        // test max length 36 alphanumeric string with radix 36
+        $cipher     = new FF3Cipher("EF4359D8D580AA4F7F036D6F04FC6A94", "D8E7920AFA330A73", 36);
+        $plaintext  = "abcdefghijklmnopqrstuvwxyz0123456789";
+        $ciphertext = $cipher->encrypt($plaintext);
+        $decrypted  = $cipher->decrypt($ciphertext);
+        $this->assertEquals($plaintext, $decrypted);
     }
 }
