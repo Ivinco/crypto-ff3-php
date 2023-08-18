@@ -7,7 +7,7 @@ use phpseclib3\Crypt\AES;
 
 class FF3Cipher
 {
-    public const DOMAIN_MIN     = 1000000;
+    public const DOMAIN_MIN     = 1_000_000;
     public const BASE62         = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     public const BASE62_LEN     = 62;
     public const RADIX_MAX      = 256;
@@ -20,8 +20,8 @@ class FF3Cipher
     private string $tweak;
     private        $radix;
     private        $alphabet;
-    private        $minLen;
-    private        $maxLen;
+    public        $minLen;
+    public         $maxLen;
     private AES    $aesCipher;
 
     /**
@@ -42,11 +42,11 @@ class FF3Cipher
 
         # Calculate range of supported message lengths [minLen..maxLen]
         # per revised spec, radix^minLength >= 1,000,000.
-        $this->minLen = (int) ceil(log(self::DOMAIN_MIN) / log($radix));
+        $this->minLen = ceil(log(self::DOMAIN_MIN) / log($radix));
 
         # We simplify the specs log[radix](2^96) to 96/log2(radix) using the log base
         # change rule
-        $this->maxLen = 2 * floor(96 / log($radix, 2));
+        $this->maxLen = (2 * floor(log(2 ** 96) / log($radix)));
 
         $keyLength = strlen($keyBytes);
         switch ($keyLength) {
@@ -82,7 +82,7 @@ class FF3Cipher
      */
     public static function withCustomAlphabet(string $key, string $tweak, string $alphabet): self
     {
-        $cipher           = new self($key, $tweak, strlen($alphabet));
+        $cipher           = new self($key, $tweak, mb_strlen($alphabet));
         $cipher->alphabet = $alphabet;
         return $cipher;
     }
