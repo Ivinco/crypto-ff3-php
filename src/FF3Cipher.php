@@ -122,7 +122,7 @@ class FF3Cipher
         }
 
         // Calculate split point
-        $u = ceil($n / 2);
+        $u = (int) ceil($n / 2);
         $v = $n - $u;
 
         // Split the message
@@ -163,6 +163,7 @@ class FF3Cipher
             # P is fixed-length 16 bytes
             $P    = self::calculateP($i, $this->alphabet, $W, $B);
             $revP = self::decToHex(array_reverse($P));
+            //error_log("P: " . self::decToHex($P) . ' revP: ' . $revP);
 
             // Calculate S by operating on P in place
             $S = $this->aesCipher->encrypt(hex2bin($revP));
@@ -326,7 +327,7 @@ class FF3Cipher
         // Decode string into number
         $BBytes = self::toBytes(self::decodeIntR($B, $alphabet));
         // Convert number to bytes (big endian)
-        $BBytes = unpack('C*', $BBytes);
+        $BBytes = array_values(unpack('C*', $BBytes));
 
         // Copy BBytes to PBytes
         $startIndex = self::BLOCK_SIZE - count($BBytes);
@@ -357,15 +358,17 @@ class FF3Cipher
             throw new FF3Exception("Base $base is outside range of supported radix 2.." . self::RADIX_MAX);
         }
 
+        $alphabetArr = mb_str_split($alphabet, 1, 'UTF-8');
+
         $x = '';
         while (gmp_cmp($n, $base) >= 0) {
             [$n, $b] = gmp_div_qr($n, $base);
-            $x .= $alphabet[gmp_intval($b)];
+            $x .= $alphabetArr[gmp_intval($b)];
         }
-        $x .= $alphabet[gmp_intval($n)];
+        $x .= $alphabetArr[gmp_intval($n)];
 
         if (mb_strlen($x, 'UTF-8') < $length) {
-            $x = str_pad($x, $length, $alphabet[0]);
+            $x = mb_str_pad($x, $length, $alphabetArr[0]);
         }
 
         return $x;
@@ -387,8 +390,7 @@ class FF3Cipher
         $num    = gmp_init(0);
 
         $idx = 0;
-        for ($i = $strlen - 1; $i >= 0; $i--) {
-            $char    = $astring[$i];
+        foreach (array_reverse(mb_str_split($astring, 1, 'UTF-8')) as $char) {
             $power   = ($strlen - ($idx + 1));
             $charPos = mb_strpos($alphabet, $char, 0, 'UTF-8');
             if ($charPos === false) {
