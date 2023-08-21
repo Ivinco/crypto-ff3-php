@@ -17,12 +17,12 @@ class FF3Cipher
     public const TWEAK_LEN_NEW  = 7;
     public const HALF_TWEAK_LEN = 4;
 
-    private string $tweak;
-    private        $radix;
-    private        $alphabet;
-    public        $minLen;
-    public         $maxLen;
-    private AES    $aesCipher;
+    private string  $tweak;
+    private int     $radix;
+    private ?string $alphabet;
+    public float    $minLen;
+    public float    $maxLen;
+    private AES     $aesCipher;
 
     /**
      * @throws \Ivinco\Crypto\FF3Exception
@@ -35,7 +35,7 @@ class FF3Cipher
         $this->radix = $radix;
 
         if ($radix <= self::BASE62_LEN) {
-            $this->alphabet = substr(self::BASE62, 0, $radix);
+            $this->alphabet = mb_substr(self::BASE62, 0, $radix, 'UTF-8');
         } else {
             $this->alphabet = null;
         }
@@ -48,20 +48,14 @@ class FF3Cipher
         # change rule
         $this->maxLen = (2 * floor(log(2 ** 96) / log($radix)));
 
+        # Check that key length is valid
         $keyLength = strlen($keyBytes);
-        switch ($keyLength) {
-            case 16:
-                $keyLength = 128;
-                break;
-            case 24:
-                $keyLength = 192;
-                break;
-            case 32:
-                $keyLength = 256;
-                break;
-            default:
-                throw new FF3Exception("Invalid key length: $keyLength. Must be 128, 192, or 256 bits.");
-        }
+        $keyLength = match (strlen($keyBytes)) {
+            16      => 128,
+            24      => 192,
+            32      => 256,
+            default => throw new FF3Exception("Invalid key length: $keyLength. Must be 128, 192, or 256 bits."),
+        };
 
         if ($radix < 2 || $radix > self::RADIX_MAX) {
             throw new FF3Exception("Radix must be between 2 and " . self::RADIX_MAX . ", inclusive.");
@@ -82,7 +76,7 @@ class FF3Cipher
      */
     public static function withCustomAlphabet(string $key, string $tweak, string $alphabet): self
     {
-        $cipher           = new self($key, $tweak, mb_strlen($alphabet));
+        $cipher           = new self($key, $tweak, mb_strlen($alphabet, 'UTF-8'));
         $cipher->alphabet = $alphabet;
         return $cipher;
     }
@@ -114,7 +108,7 @@ class FF3Cipher
     {
         $tweakBytes = hex2bin($tweak);
 
-        $n = strlen($plaintext);
+        $n = mb_strlen($plaintext, 'UTF-8');
 
         // Check if message length is within minLength and maxLength bounds
         if ($n < $this->minLen || $n > $this->maxLen) {
@@ -132,8 +126,8 @@ class FF3Cipher
         $v = $n - $u;
 
         // Split the message
-        $A = substr($plaintext, 0, $u);
-        $B = substr($plaintext, $u);
+        $A = mb_substr($plaintext, 0, $u, 'UTF-8');
+        $B = mb_substr($plaintext, $u, null, 'UTF-8');
 
         if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
             # FF3-1
@@ -204,7 +198,7 @@ class FF3Cipher
     {
         $tweakBytes = hex2bin($tweak);
 
-        $n = strlen($ciphertext);
+        $n = mb_strlen($ciphertext, 'UTF-8');
 
         // Check if message length is within minLength and maxLength bounds
         if ($n < $this->minLen || $n > $this->maxLen) {
@@ -222,8 +216,8 @@ class FF3Cipher
         $v = $n - $u;
 
         // Split the message
-        $A = substr($ciphertext, 0, $u);
-        $B = substr($ciphertext, $u);
+        $A = mb_substr($ciphertext, 0, $u, 'UTF-8');
+        $B = mb_substr($ciphertext, $u, null, 'UTF-8');
 
         if (strlen($tweakBytes) === self::TWEAK_LEN_NEW) {
             # FF3-1
@@ -357,7 +351,7 @@ class FF3Cipher
      */
     public static function encodeIntR(GMP $n, string $alphabet, int $length = 0): string
     {
-        $base = strlen($alphabet);
+        $base = mb_strlen($alphabet, 'UTF-8');
 
         if ($base > self::RADIX_MAX) {
             throw new FF3Exception("Base $base is outside range of supported radix 2.." . self::RADIX_MAX);
@@ -370,7 +364,7 @@ class FF3Cipher
         }
         $x .= $alphabet[gmp_intval($n)];
 
-        if (strlen($x) < $length) {
+        if (mb_strlen($x, 'UTF-8') < $length) {
             $x = str_pad($x, $length, $alphabet[0]);
         }
 
@@ -388,15 +382,15 @@ class FF3Cipher
      */
     public static function decodeIntR(string $astring, string $alphabet): GMP
     {
-        $strlen = strlen($astring);
-        $base   = strlen($alphabet);
+        $strlen = mb_strlen($astring, 'UTF-8');
+        $base   = mb_strlen($alphabet, 'UTF-8');
         $num    = gmp_init(0);
 
         $idx = 0;
         for ($i = $strlen - 1; $i >= 0; $i--) {
             $char    = $astring[$i];
             $power   = ($strlen - ($idx + 1));
-            $charPos = strpos($alphabet, $char);
+            $charPos = mb_strpos($alphabet, $char, 0, 'UTF-8');
             if ($charPos === false) {
                 throw new FF3Exception("char $char not found in alphabet $alphabet.");
             }
@@ -407,7 +401,16 @@ class FF3Cipher
         return $num;
     }
 
-    public static function toBytes($number, $length = 1, $byteorder = 'big')
+    /**
+     * Convert a GMP number to a byte string
+     *
+     * @param \GMP   $number
+     * @param int    $length
+     * @param string $byteorder
+     *
+     * @return string
+     */
+    public static function toBytes(GMP $number, int $length = 1, string $byteorder = 'big'): string
     {
         $binString    = gmp_export($number);
         $actualLength = strlen($binString);
@@ -429,7 +432,7 @@ class FF3Cipher
      *
      * @return string
      */
-    public static function decToHex(array $values)
+    public static function decToHex(array $values): string
     {
         $hexString = "";
         foreach ($values as $value) {
