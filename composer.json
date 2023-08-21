@@ -12,7 +12,6 @@
   "require": {
     "php": ">=8.0",
     "ext-gmp": "*",
-    "ext-openssl": "*",
     "ext-mbstring": "*",
     "phpseclib/phpseclib": "^3.0"
   },
