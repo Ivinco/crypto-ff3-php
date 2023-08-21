@@ -1,5 +1,5 @@
 {
-  "name": "ivinco/ff3",
+  "name": "ivinco/crypto-ff3",
   "description": "Format-Preserving Encryption for FF3 on PHP",
   "type": "library",
   "license": "Apache-2.0",
