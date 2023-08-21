@@ -2,11 +2,14 @@
 
 ## Overview
 
-FF3Cipher is a PHP implementation of the FF3 (Format-Preserving Encryption) algorithm.
-This project was initiated because there was no existing FF3 implementation available
-for PHP. With the growth of data protection needs and the wide adoption of PHP in web
-applications, this project aims to bridge the gap, allowing developers to utilize FF3
-encryption easily within their PHP applications.
+FF3Cipher is a PHP implementation of the FPE (Format-Preserving Encryption) algorithm.
+
+Unlike other PHP implementations, this library is capable of working with `multibyte`
+character dictionaries.
+
+With the growth of data protection needs and the wide adoption of PHP in web
+applications, this project aims to bridge the gap, allowing developers to utilize
+FF3 encryption easily within their PHP applications.
 
 ## Installation
 
@@ -79,3 +82,8 @@ For FF3 implementations in other languages, you can refer to:
 * [Node.js Version](https://github.com/mysto/node-fpe)
 * [Java Version](https://github.com/mysto/java-fpe)
 * [C Version](https://github.com/mysto/clang-fpe)
+
+For more information about FF3, you can refer to:
+
+* https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-38Gr1-draft.pdf
+* https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Standards-and-Guidelines/documents/examples/FF3samples.pdf
