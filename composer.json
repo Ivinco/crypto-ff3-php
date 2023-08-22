@@ -3,6 +3,14 @@
   "description": "Format-Preserving Encryption for FF3 on PHP",
   "type": "library",
   "license": "MIT",
+  "keywords": [
+    "php",
+    "encryption",
+    "decryption",
+    "fpe",
+    "ff3",
+    "feistel-cipher"
+  ],
   "authors": [
     {
       "name": "Ivinco",
