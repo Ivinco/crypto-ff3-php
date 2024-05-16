@@ -14,7 +14,10 @@
  *
  * @return string
  */
-function mb_str_pad(string $string, int $length, string $pad_string = " "): string
-{
-    return $string . str_repeat($pad_string, $length - mb_strlen($string));
+
+if(!function_exists('mb_str_pad')){
+    function mb_str_pad(string $string, int $length, string $pad_string = " "): string
+    {
+        return $string . str_repeat($pad_string, $length - mb_strlen($string));
+    }
 }
